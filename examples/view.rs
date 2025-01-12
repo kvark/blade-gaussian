@@ -26,6 +26,63 @@ struct GaussianGpu {
     color: u32,
 }
 
+struct Icosahedron {
+    vertices: [[f32; 3]; 12],
+    triangles: [[u16; 3]; 20],
+}
+
+impl Icosahedron {
+    fn new() -> Self {
+        // http://blog.andreaskahler.com/2009/06/creating-icosphere-mesh-in-code.html
+        let t0 = (1.0 + 5.0f32.sqrt()) / 2.0;
+        let norm = (1.0 + t0 * t0).sqrt();
+        let t = t0 / norm;
+        let s = 1.0 / norm;
+        Self {
+            vertices: [
+                [-s, t, 0.0],
+                [s, t, 0.0],
+                [-s, -t, 0.0],
+                [s, -t, 0.0],
+                [0.0, -s, t],
+                [0.0, s, t],
+                [0.0, -s, -t],
+                [0.0, s, -t],
+                [t, 0.0, -s],
+                [t, 0.0, s],
+                [-t, 0.0, -s],
+                [-t, 0.0, s],
+            ],
+            triangles: [
+                // 5 faces around point 0
+                [0, 11, 5],
+                [0, 5, 1],
+                [0, 1, 7],
+                [0, 7, 10],
+                [0, 10, 11],
+                // 5 adjacent faces
+                [1, 5, 9],
+                [5, 11, 4],
+                [11, 10, 2],
+                [10, 7, 6],
+                [7, 1, 8],
+                // 5 faces around point 3
+                [3, 9, 4],
+                [3, 4, 2],
+                [3, 2, 6],
+                [3, 6, 8],
+                [3, 8, 9],
+                // 5 adjacent faces
+                [4, 9, 5],
+                [2, 4, 11],
+                [6, 2, 10],
+                [8, 6, 7],
+                [9, 8, 1],
+            ],
+        }
+    }
+}
+
 struct PointCloud {
     mesh_buf: gpu::Buffer,
     instance_buf: gpu::Buffer,
@@ -69,19 +126,22 @@ impl PointCloud {
             memory: gpu::Memory::Upload,
         });
 
+        let geometry = Icosahedron::new();
+        let vertex_data_size = (geometry.vertices.len() * mem::size_of::<[f32; 3]>()) as u64;
+        let index_data_size = (geometry.triangles.len() * mem::size_of::<[u16; 3]>()) as u64;
         let mesh_buf = context.create_buffer(gpu::BufferDesc {
             name: "gauss-mesh",
-            size: 16,
+            size: vertex_data_size + index_data_size,
             memory: gpu::Memory::Device,
         });
         let meshes = [gpu::AccelerationStructureMesh {
             vertex_data: mesh_buf.at(0),
             vertex_format: gpu::VertexFormat::F32Vec3,
-            vertex_stride: mem::size_of::<f32>() as u32 * 3,
-            vertex_count: 1,
-            index_data: gpu::Buffer::default().at(0),
-            index_type: None,
-            triangle_count: 0,
+            vertex_stride: mem::size_of::<[f32; 3]>() as u32,
+            vertex_count: geometry.vertices.len() as u32,
+            index_data: mesh_buf.at(vertex_data_size),
+            index_type: Some(gpu::IndexType::U16),
+            triangle_count: geometry.triangles.len() as u32,
             transform_data: gpu::Buffer::default().at(0),
             is_opaque: false,
         }];
@@ -163,11 +223,7 @@ impl PointCloud {
         // Encode init operations
         encoder.start();
         if let mut pass = encoder.transfer("init") {
-            pass.copy_buffer_to_buffer(
-                gauss_scratch.at(0),
-                gauss_buf.at(0),
-                gauss_total_size,
-            );
+            pass.copy_buffer_to_buffer(gauss_scratch.at(0), gauss_buf.at(0), gauss_total_size);
         }
         if let mut pass = encoder.acceleration_structure("bottom") {
             pass.build_bottom_level(blas, &meshes, scratch_buf.at(0));
