@@ -1,3 +1,5 @@
+#![allow(irrefutable_let_patterns)]
+
 use blade_graphics as gpu;
 use std::{env, fs, mem, slice};
 
@@ -150,17 +152,41 @@ impl PointCloud {
             size: tlas_sizes.data,
         });
 
+        let tlas_scratch_offset =
+            (blas_sizes.scratch | (gpu::limits::ACCELERATION_STRUCTURE_SCRATCH_ALIGNMENT - 1)) + 1;
+        let scratch_buf = context.create_buffer(gpu::BufferDesc {
+            name: "scratch",
+            size: tlas_scratch_offset + tlas_sizes.scratch,
+            memory: gpu::Memory::Device,
+        });
+
         // Encode init operations
         encoder.start();
-        encoder.transfer("init").copy_buffer_to_buffer(
-            gauss_scratch.at(0),
-            gauss_buf.at(0),
-            gauss_total_size,
-        );
+        if let mut pass = encoder.transfer("init") {
+            pass.copy_buffer_to_buffer(
+                gauss_scratch.at(0),
+                gauss_buf.at(0),
+                gauss_total_size,
+            );
+        }
+        if let mut pass = encoder.acceleration_structure("bottom") {
+            pass.build_bottom_level(blas, &meshes, scratch_buf.at(0));
+        }
+        if let mut pass = encoder.acceleration_structure("top") {
+            pass.build_top_level(
+                tlas,
+                &[blas],
+                count as u32,
+                instance_buf.at(0),
+                scratch_buf.at(tlas_scratch_offset),
+            );
+        }
         let sync_point = context.submit(encoder);
         context.wait_for(&sync_point, !0);
 
         context.destroy_buffer(gauss_scratch);
+        context.destroy_buffer(scratch_buf);
+
         Self {
             mesh_buf,
             instance_buf,
@@ -184,6 +210,7 @@ fn main() {
     log::info!("Initializing");
     let context = unsafe {
         gpu::Context::init(gpu::ContextDesc {
+            validation: !cfg!(debug_assertions),
             ..Default::default()
         })
     }
