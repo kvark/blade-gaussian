@@ -20,8 +20,7 @@ mod spz {
     }
 }
 
-struct _GaussianGpu {
-    alpha: f32,
+struct GaussianGpu {
     color: u32,
 }
 
@@ -59,8 +58,20 @@ fn main() {
     let mut instances = vec![gpu::AccelerationStructureInstance::default(); count];
     let mut scratch = Vec::<u8>::new();
 
+    let gauss_total_size = (count * mem::size_of::<GaussianGpu>()) as u64;
+    let gauss_buf = context.create_buffer(gpu::BufferDesc {
+        name: "gauss-blobs",
+        size: gauss_total_size,
+        memory: gpu::Memory::Device,
+    });
+    let gauss_scratch = context.create_buffer(gpu::BufferDesc {
+        name: "gauss-upload",
+        size: gauss_total_size,
+        memory: gpu::Memory::Upload,
+    });
+
     let vertex_buf = context.create_buffer(gpu::BufferDesc {
-        name: "gauss",
+        name: "gauss-mesh",
         size: 16,
         memory: gpu::Memory::Device,
     });
@@ -116,6 +127,20 @@ fn main() {
         instance.transform = col_major.into();
     }
 
+    // alphas
+    let mut alphas = vec![0u8; count];
+    gsz.read_exact(alphas.as_mut_slice()).unwrap();
+    // colors
+    scratch.resize(count * 3, 0);
+    gsz.read_exact(scratch.as_mut_slice()).unwrap();
+    {
+        let gaussians =
+            unsafe { slice::from_raw_parts_mut(gauss_scratch.data() as *mut GaussianGpu, count) };
+        for (gaussian, (c3, alpha)) in gaussians.iter_mut().zip(scratch.chunks(3).zip(alphas)) {
+            gaussian.color = u32::from_le_bytes([c3[0], c3[1], c3[2], alpha]);
+        }
+    }
+
     // Build TLAS
     let tlas_sizes = context.get_top_level_acceleration_structure_sizes(count as u32);
     let instance_buffer =
@@ -126,7 +151,23 @@ fn main() {
         size: tlas_sizes.data,
     });
 
+    // Encoder init
+    let mut command_encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
+        name: "init",
+        buffer_count: 1,
+    });
+    command_encoder.start();
+    command_encoder.transfer("init").copy_buffer_to_buffer(
+        gauss_scratch.at(0),
+        gauss_buf.at(0),
+        gauss_total_size,
+    );
+    let sync_point = context.submit(&mut command_encoder);
+    context.wait_for(&sync_point, !0);
+
     // Cleanup
+    context.destroy_buffer(gauss_buf);
+    context.destroy_buffer(gauss_scratch);
     context.destroy_buffer(vertex_buf);
     context.destroy_buffer(instance_buffer);
     context.destroy_acceleration_structure(blas);
