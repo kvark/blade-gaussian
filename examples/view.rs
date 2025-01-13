@@ -261,6 +261,22 @@ impl PointCloud {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct Parameters {
+    cam_position: [f32; 3],
+    depth: f32,
+    cam_orientation: [f32; 4],
+    fov: [f32; 2],
+    pad: [u32; 2],
+}
+
+#[derive(blade_macros::ShaderData)]
+struct DrawData {
+    g_parameters: Parameters,
+    g_acc_struct: gpu::AccelerationStructure,
+}
+
 fn main() {
     env_logger::init();
     log::info!("Initializing");
@@ -280,6 +296,83 @@ fn main() {
         .nth(1)
         .expect("Need a path to .spz as an argument");
     let mut point_cloud = PointCloud::load(&arg_name, &context, &mut command_encoder);
+
+    let extent = gpu::Extent {
+        width: 100,
+        height: 100,
+        depth: 1,
+    };
+    let target_format = gpu::TextureFormat::Rgba8Unorm;
+    let texture = context.create_texture(gpu::TextureDesc {
+        name: "target",
+        format: target_format,
+        size: extent,
+        array_layer_count: 1,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: gpu::TextureDimension::D2,
+        usage: gpu::TextureUsage::TARGET,
+    });
+    let texture_view = context.create_texture_view(
+        texture,
+        gpu::TextureViewDesc {
+            name: "target",
+            format: target_format,
+            dimension: gpu::ViewDimension::D2,
+            subresources: &Default::default(),
+        },
+    );
+
+    let source = std::fs::read_to_string("examples/shader.wgsl").unwrap();
+    let shader = context.create_shader(gpu::ShaderDesc { source: &source });
+    let draw_layout = <DrawData as gpu::ShaderData>::layout();
+    let draw_pipeline = context.create_render_pipeline(gpu::RenderPipelineDesc {
+        name: "main",
+        data_layouts: &[&draw_layout],
+        primitive: gpu::PrimitiveState {
+            topology: gpu::PrimitiveTopology::TriangleStrip,
+            ..Default::default()
+        },
+        vertex: shader.at("draw_vs"),
+        vertex_fetches: &[],
+        fragment: Some(shader.at("draw_fs")),
+        color_targets: &[target_format.into()],
+        depth_stencil: None,
+        multisample_state: Default::default(),
+    });
+
+    command_encoder.start();
+    if let mut pass = command_encoder.render(
+        "main",
+        gpu::RenderTargetSet {
+            colors: &[gpu::RenderTarget {
+                view: texture_view,
+                init_op: gpu::InitOp::Clear(gpu::TextureColor::OpaqueBlack),
+                finish_op: gpu::FinishOp::Store,
+            }],
+            depth_stencil: None,
+        },
+    ) {
+        let mut pen = pass.with(&draw_pipeline);
+        pen.bind(
+            0,
+            &DrawData {
+                g_parameters: Parameters {
+                    cam_position: [0.0, 0.0, 0.0],
+                    depth: 1000.0,
+                    cam_orientation: [0.0, 0.0, 0.0, 1.0],
+                    fov: [0.7, 0.7],
+                    pad: [0; 2],
+                },
+                g_acc_struct: point_cloud.tlas,
+            },
+        );
+        pen.draw(0, 3, 0, 1);
+    }
+    let sync_point = context.submit(&mut command_encoder);
+    context.wait_for(&sync_point, !0);
+    context.destroy_texture_view(texture_view);
+    context.destroy_texture(texture);
 
     context.destroy_command_encoder(&mut command_encoder);
     point_cloud.deinit(&context);

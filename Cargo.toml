@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 blade-graphics = { git = "https://github.com/kvark/blade", rev = "a79990e4421496f187ce172f559d7d38b287b72e" }
 blade-macros = "0.3"
+bytemuck = "1"
 glam = { version = "0.29", features = ["mint"] }
 flate2 = "1.0"
 log = "0.4"
