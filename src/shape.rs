@@ -4,12 +4,12 @@ pub struct Icosahedron {
 }
 
 impl Icosahedron {
-    pub fn new() -> Self {
+    pub fn new(inner_radius: f32) -> Self {
         // http://blog.andreaskahler.com/2009/06/creating-icosphere-mesh-in-code.html
         let t0 = (1.0 + 5.0f32.sqrt()) / 2.0;
-        let norm = (1.0 + t0 * t0).sqrt();
-        let t = t0 / norm;
-        let s = 1.0 / norm;
+        let scale = inner_radius / (1.0 + t0 * t0).sqrt();
+        let t = t0 * scale;
+        let s = 1.0 * scale;
         Self {
             vertices: [
                 [-s, t, 0.0],

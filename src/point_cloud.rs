@@ -7,6 +7,7 @@ mod spz {
     pub const SCALE_LOG_SCALE: f32 = 1.0 / 16.0;
     pub const SCALE_LOG_OFFSET: f32 = -10.0;
     pub const ROT_SCALE: f32 = 1.0 / 127.5;
+    pub const COLOR_SCALE: f32 = 1.0 / 0.15;
 
     #[repr(C)]
     #[derive(Default, Debug)]
@@ -21,10 +22,17 @@ mod spz {
     }
 }
 
+fn inv_sigmoid(x: f32) -> f32 {
+    (x / (1.0 - x)).ln()
+}
+fn unpack_color(raw: u8) -> f32 {
+    spz::COLOR_SCALE * (raw as f32 / 255.0 - 0.5)
+}
+
 pub struct PointCloud {
     mesh_buf: gpu::Buffer,
     instance_buf: gpu::Buffer,
-    gauss_buf: gpu::Buffer,
+    pub gauss_buf: gpu::Buffer,
     blas: gpu::AccelerationStructure,
     pub tlas: gpu::AccelerationStructure,
 }
@@ -68,7 +76,8 @@ impl PointCloud {
             memory: gpu::Memory::Upload,
         });
 
-        let geometry = super::Icosahedron::new();
+        let inner_radius = 1.0; //TODO
+        let geometry = super::Icosahedron::new(inner_radius);
         let vertex_data_size = (geometry.vertices.len() * mem::size_of::<[f32; 3]>()) as u64;
         let index_data_size = (geometry.triangles.len() * mem::size_of::<[u16; 3]>()) as u64;
         let mesh_buf = context.create_buffer(gpu::BufferDesc {
@@ -141,8 +150,16 @@ impl PointCloud {
             let gaussians = unsafe {
                 slice::from_raw_parts_mut(gauss_scratch.data() as *mut super::GaussianGpu, count)
             };
-            for (gaussian, (c3, alpha)) in gaussians.iter_mut().zip(scratch.chunks(3).zip(alphas)) {
-                gaussian.color = u32::from_le_bytes([c3[0], c3[1], c3[2], alpha]);
+            for (gaussian, (c3, raw_alpha)) in
+                gaussians.iter_mut().zip(scratch.chunks(3).zip(alphas))
+            {
+                let alpha = inv_sigmoid(raw_alpha as f32 / 255.0);
+                gaussian.color = [
+                    unpack_color(c3[0]),
+                    unpack_color(c3[1]),
+                    unpack_color(c3[2]),
+                    alpha,
+                ];
             }
         }
 

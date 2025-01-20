@@ -79,7 +79,7 @@ impl ControlledCamera {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
-pub struct Parameters {
+pub struct CameraParams {
     cam_position: [f32; 3],
     depth: f32,
     cam_orientation: [f32; 4],
@@ -87,10 +87,19 @@ pub struct Parameters {
     pad: [u32; 2],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
+pub struct Parameters {
+    min_opacity: f32,
+    min_transmittance: f32,
+}
+
 #[derive(blade_macros::ShaderData)]
 struct DrawData {
-    g_parameters: Parameters,
+    g_camera: CameraParams,
+    g_params: Parameters,
     g_acc_struct: gpu::AccelerationStructure,
+    g_data: gpu::BufferPiece,
 }
 
 struct Example {
@@ -233,14 +242,19 @@ impl Example {
             pen.bind(
                 0,
                 &DrawData {
-                    g_parameters: Parameters {
+                    g_camera: CameraParams {
                         cam_position: self.camera.position.into(),
                         depth: self.camera.depth,
                         cam_orientation: self.camera.orientation.into(),
                         fov: [aspect * self.camera.fov_y, self.camera.fov_y],
                         pad: [0; 2],
                     },
+                    g_params: Parameters {
+                        min_opacity: 0.01,
+                        min_transmittance: 0.01,
+                    },
                     g_acc_struct: self.point_cloud.tlas,
+                    g_data: self.point_cloud.gauss_buf.into(),
                 },
             );
             pen.draw(0, 3, 0, 1);
@@ -261,6 +275,9 @@ fn main() {
     let window = event_loop.create_window(window_attributes).unwrap();
 
     let mut example = Example::init(&window);
+    let mut last_mouse_pos = [0i32; 2];
+    let mut in_drag = false;
+    let drag_speed = 0.01f32;
 
     event_loop
         .run(|event, target| {
@@ -286,6 +303,26 @@ fn main() {
                             target.exit();
                         }
                         example.camera.on_key(key_code, 1.0);
+                    }
+                    winit::event::WindowEvent::MouseInput {
+                        state,
+                        button: winit::event::MouseButton::Left,
+                        ..
+                    } => {
+                        in_drag = state == winit::event::ElementState::Pressed;
+                    }
+                    winit::event::WindowEvent::CursorMoved { position, .. } => {
+                        if in_drag {
+                            let prev = example.camera.orientation;
+                            let rotation_local = glam::Quat::from_rotation_x(
+                                (last_mouse_pos[1] as f32 - position.y as f32) * drag_speed,
+                            );
+                            let rotation_global = glam::Quat::from_rotation_y(
+                                (last_mouse_pos[0] as f32 - position.x as f32) * drag_speed,
+                            );
+                            example.camera.orientation = rotation_global * prev * rotation_local;
+                        }
+                        last_mouse_pos = [position.x as i32, position.y as i32];
                     }
                     winit::event::WindowEvent::MouseWheel { delta, .. } => {
                         example.camera.on_wheel(delta);

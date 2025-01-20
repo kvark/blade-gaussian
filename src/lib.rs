@@ -7,5 +7,5 @@ pub use point_cloud::PointCloud;
 pub use shape::Icosahedron;
 
 pub struct GaussianGpu {
-    pub color: u32,
+    pub color: [f32; 4],
 }
