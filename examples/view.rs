@@ -172,6 +172,7 @@ impl Example {
         Self {
             camera: ControlledCamera {
                 depth: 10000.0,
+                fov_y: 0.8,
                 fly_speed: 1.0,
                 ..Default::default()
             },

@@ -40,7 +40,8 @@ fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
     var t_start = 0.0;
     var color = vec3f(0.0);
     loop {
-        rayQueryInitialize(&rq, g_acc_struct, RayDesc(RAY_FLAG_NONE, 0xFFu, t_start + 0.1, g_parameters.depth, ray_pos, ray_dir));
+        let desc = RayDesc(RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING, 0xFFu, t_start + 0.1, g_parameters.depth, ray_pos, ray_dir);
+        rayQueryInitialize(&rq, g_acc_struct, desc);
         rayQueryProceed(&rq);
         let intersection = rayQueryGetCommittedIntersection(&rq);
         if (intersection.kind == RAY_QUERY_INTERSECTION_NONE) {
@@ -49,5 +50,6 @@ fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
         t_start = intersection.t;
     }
 
+    color = vec3f(t_start);
     return vec4f(color, 0.0);
 }

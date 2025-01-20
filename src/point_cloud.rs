@@ -1,10 +1,10 @@
 use blade_graphics as gpu;
 
-use std::{fs, mem, slice};
+use std::{fs, mem, ptr, slice};
 
 mod spz {
     pub const MAGIC: u32 = 0x5053474e;
-    pub const SCALE_LOG_SCALE: f32 = 16.0;
+    pub const SCALE_LOG_SCALE: f32 = 1.0 / 16.0;
     pub const SCALE_LOG_OFFSET: f32 = -10.0;
     pub const ROT_SCALE: f32 = 1.0 / 127.5;
 
@@ -112,10 +112,12 @@ impl PointCloud {
             let mut p_c = [0.0; 3];
             for (p_c1, p) in p_c.iter_mut().zip(p3.chunks(24 / 8)) {
                 let pos_u = u32::from_le_bytes([p[0], p[1], p[2], 0]);
-                *p_c1 = pos_u as f32 * pos_divisor;
+                let sign = if p[2] & 0x80 != 0 { -1.0 } else { 1.0 };
+                *p_c1 = sign * pos_u as f32 * pos_divisor;
             }
-            let r = glam::Vec3::new(r3[0] as f32, r3[1] as f32, r3[2] as f32) * spz::ROT_SCALE;
-            let q = glam::Quat::from_xyzw(r.x, r.y, r.z, (1.0 - r.dot(r)).sqrt());
+            let r = glam::Vec3::new(r3[0] as i8 as f32, r3[1] as i8 as f32, r3[2] as i8 as f32)
+                * spz::ROT_SCALE;
+            let q = glam::Quat::from_xyzw(r.x, r.y, r.z, (1.0 - r.dot(r)).max(0.0).sqrt());
             let s = glam::Vec3::new(s3[0] as f32, s3[1] as f32, s3[2] as f32)
                 * spz::SCALE_LOG_SCALE
                 + spz::SCALE_LOG_OFFSET;
@@ -162,9 +164,32 @@ impl PointCloud {
             memory: gpu::Memory::Device,
         });
 
+        let mesh_stage = context.create_buffer(gpu::BufferDesc {
+            name: "gauss-mesh-stage",
+            size: vertex_data_size + index_data_size,
+            memory: gpu::Memory::Upload,
+        });
+        unsafe {
+            ptr::copy_nonoverlapping(
+                geometry.vertices.as_ptr(),
+                mesh_stage.data() as *mut [f32; 3],
+                geometry.vertices.len(),
+            );
+            ptr::copy_nonoverlapping(
+                geometry.triangles.as_ptr(),
+                mesh_stage.data().add(vertex_data_size as usize) as *mut [u16; 3],
+                geometry.triangles.len(),
+            );
+        }
+
         // Encode init operations
         encoder.start();
         if let mut pass = encoder.transfer("init") {
+            pass.copy_buffer_to_buffer(
+                mesh_stage.at(0),
+                mesh_buf.at(0),
+                vertex_data_size + index_data_size,
+            );
             pass.copy_buffer_to_buffer(gauss_scratch.at(0), gauss_buf.at(0), gauss_total_size);
         }
         if let mut pass = encoder.acceleration_structure("bottom") {
@@ -184,6 +209,7 @@ impl PointCloud {
 
         context.destroy_buffer(gauss_scratch);
         context.destroy_buffer(scratch_buf);
+        context.destroy_buffer(mesh_stage);
 
         Self {
             mesh_buf,
