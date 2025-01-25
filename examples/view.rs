@@ -129,6 +129,12 @@ impl Example {
     }
 
     fn init(window: &winit::window::Window) -> Self {
+        log::info!("Loading Gaussian data");
+        let arg_name = env::args()
+            .nth(1)
+            .expect("Need a path to .spz as an argument");
+        let gaussians = gauss::io::spz::load(&arg_name);
+
         let context = unsafe {
             gpu::Context::init(gpu::ContextDesc {
                 presentation: true,
@@ -140,7 +146,7 @@ impl Example {
             })
             .unwrap()
         };
-        println!("{:?}", context.device_information());
+        log::info!("{:?}", context.device_information());
         let window_size = window.inner_size();
 
         let surface = context
@@ -173,10 +179,9 @@ impl Example {
             buffer_count: 2,
         });
 
-        let arg_name = env::args()
-            .nth(1)
-            .expect("Need a path to .spz as an argument");
-        let point_cloud = gauss::PointCloud::load(&arg_name, &context, &mut command_encoder);
+        let params = gauss::InitParameters { min_opacity: 0.01 };
+        let point_cloud =
+            gauss::PointCloud::new(&gaussians, &params, &context, &mut command_encoder);
 
         Self {
             camera: ControlledCamera {

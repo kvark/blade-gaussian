@@ -7,7 +7,9 @@ impl Icosahedron {
     pub fn new(inner_radius: f32) -> Self {
         // http://blog.andreaskahler.com/2009/06/creating-icosphere-mesh-in-code.html
         let t0 = (1.0 + 5.0f32.sqrt()) / 2.0;
-        let scale = inner_radius / (1.0 + t0 * t0).sqrt();
+        let s0 = 1.0;
+        let r = (t0 + s0) / 3.0;
+        let scale = inner_radius / r;
         let t = t0 * scale;
         let s = 1.0 * scale;
         Self {
