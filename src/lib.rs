@@ -7,8 +7,23 @@ mod shape;
 pub use point_cloud::{InitParameters, PointCloud};
 pub use shape::Icosahedron;
 
-pub const SH_DEGREE: usize = 0;
-pub const SH_COMPONENTS: usize = (1 + SH_DEGREE) * (1 + SH_DEGREE);
+pub const fn get_sh_component_count(degree: usize) -> usize {
+    (1 + degree) * (1 + degree)
+}
+pub const fn get_sh_degree(count: usize) -> usize {
+    if count <= 1 {
+        0
+    } else if count <= 4 {
+        1
+    } else if count <= 9 {
+        2
+    } else {
+        3
+    }
+}
+
+pub const MAX_SH_DEGREE: usize = 0;
+pub const MAX_SH_COMPONENTS: usize = get_sh_component_count(MAX_SH_DEGREE);
 
 #[derive(Clone, Default)]
 pub struct Gaussian {
@@ -16,7 +31,12 @@ pub struct Gaussian {
     pub rotation: glam::Quat,
     pub scale: glam::Vec3,
     pub opacity: f32,
-    pub sh: [glam::Vec3; SH_COMPONENTS],
+    pub shc: [glam::Vec3; MAX_SH_COMPONENTS],
+}
+
+pub struct Model {
+    pub gaussians: Vec<Gaussian>,
+    pub max_sh_degree: usize,
 }
 
 pub struct GaussianGpu {

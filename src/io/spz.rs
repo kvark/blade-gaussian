@@ -25,7 +25,7 @@ fn _unpack_color(raw: u8) -> f32 {
     _COLOR_SCALE * (raw as f32 / 255.0 - 0.5)
 }
 
-pub fn load(file_path: &str) -> Vec<crate::Gaussian> {
+pub fn load(file_path: &str) -> crate::Model {
     use std::io::Read as _;
 
     assert!(file_path.ends_with(".spz"));
@@ -88,5 +88,8 @@ pub fn load(file_path: &str) -> Vec<crate::Gaussian> {
 
     //TODO: spherical harmonics
 
-    gaussians
+    crate::Model {
+        gaussians,
+        max_sh_degree: 0, //TODO
+    }
 }

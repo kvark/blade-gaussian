@@ -2,7 +2,7 @@
 
 use blade_gaussian as gauss;
 use blade_graphics as gpu;
-use std::env;
+use std::{env, mem};
 
 const MAX_FLY_SPEED: f32 = 1000000.0;
 
@@ -39,10 +39,10 @@ impl ControlledCamera {
         let rotate_offset_z = 1000.0 * delta;
         match code {
             Kc::KeyW => {
-                self.move_by(glam::Vec3::new(0.0, 0.0, -move_offset));
+                self.move_by(glam::Vec3::new(0.0, 0.0, move_offset));
             }
             Kc::KeyS => {
-                self.move_by(glam::Vec3::new(0.0, 0.0, move_offset));
+                self.move_by(glam::Vec3::new(0.0, 0.0, -move_offset));
             }
             Kc::KeyA => {
                 self.move_by(glam::Vec3::new(-move_offset, 0.0, 0.0));
@@ -111,6 +111,7 @@ struct Example {
     point_cloud: gauss::PointCloud,
     surface: gpu::Surface,
     context: gpu::Context,
+    min_opacity: f32,
 }
 
 impl Example {
@@ -124,16 +125,42 @@ impl Example {
             },
             usage: gpu::TextureUsage::TARGET,
             display_sync: gpu::DisplaySync::Recent,
+            color_space: gpu::ColorSpace::Srgb,
             ..Default::default()
         }
     }
 
     fn init(window: &winit::window::Window) -> Self {
         log::info!("Loading Gaussian data");
-        let arg_name = env::args()
-            .nth(1)
-            .expect("Need a path to .spz as an argument");
-        let gaussians = gauss::io::spz::load(&arg_name);
+        let model = match env::args().nth(1) {
+            Some(arg_name) => gauss::io::load(&arg_name),
+            None => {
+                log::info!("Generating test data");
+                gauss::Model {
+                    gaussians: vec![
+                        gauss::Gaussian {
+                            mean: glam::Vec3::new(-7.0, 0.0, 15.0),
+                            scale: glam::Vec3::new(1.0, 1.0, 1.0),
+                            opacity: 1.0,
+                            ..Default::default()
+                        },
+                        gauss::Gaussian {
+                            mean: glam::Vec3::new(-1.0, 0.0, 15.0),
+                            scale: glam::Vec3::new(1.5, 1.5, 1.5),
+                            opacity: 0.5,
+                            ..Default::default()
+                        },
+                        gauss::Gaussian {
+                            mean: glam::Vec3::new(7.0, 0.0, 15.0),
+                            scale: glam::Vec3::new(2.0, 2.0, 2.0),
+                            opacity: 0.25,
+                            ..Default::default()
+                        },
+                    ],
+                    max_sh_degree: 0,
+                }
+            }
+        };
 
         let context = unsafe {
             gpu::Context::init(gpu::ContextDesc {
@@ -158,6 +185,11 @@ impl Example {
             let source = std::fs::read_to_string("examples/shader.wgsl").unwrap();
             context.create_shader(gpu::ShaderDesc { source: &source })
         };
+        assert_eq!(
+            shader.get_struct_size("Gaussian"),
+            mem::size_of::<gauss::GaussianGpu>() as u32
+        );
+
         let draw_layout = <DrawData as gpu::ShaderData>::layout();
         let draw_pipeline = context.create_render_pipeline(gpu::RenderPipelineDesc {
             name: "main",
@@ -179,14 +211,14 @@ impl Example {
             buffer_count: 2,
         });
 
-        let params = gauss::InitParameters { min_opacity: 0.01 };
-        let point_cloud =
-            gauss::PointCloud::new(&gaussians, &params, &context, &mut command_encoder);
+        let min_opacity = 0.01;
+        let params = gauss::InitParameters { min_opacity };
+        let point_cloud = gauss::PointCloud::new(&model, &params, &context, &mut command_encoder);
 
         Self {
             camera: ControlledCamera {
                 depth: 10000.0,
-                fov_y: 0.8,
+                fov_y: 1.0,
                 fly_speed: 1.0,
                 ..Default::default()
             },
@@ -197,6 +229,7 @@ impl Example {
             point_cloud,
             surface,
             context,
+            min_opacity,
         }
     }
 
@@ -255,7 +288,7 @@ impl Example {
                         pad: [0; 2],
                     },
                     g_params: Parameters {
-                        min_opacity: 0.01,
+                        min_opacity: self.min_opacity,
                         min_transmittance: 0.01,
                     },
                     g_acc_struct: self.point_cloud.tlas,
@@ -323,7 +356,7 @@ fn main() {
                                 (last_mouse_pos[1] as f32 - position.y as f32) * drag_speed,
                             );
                             let rotation_global = glam::Quat::from_rotation_y(
-                                (last_mouse_pos[0] as f32 - position.x as f32) * drag_speed,
+                                (position.x as f32 - last_mouse_pos[0] as f32) * drag_speed,
                             );
                             example.camera.orientation = rotation_global * prev * rotation_local;
                         }

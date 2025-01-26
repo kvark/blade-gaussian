@@ -16,12 +16,13 @@ pub struct PointCloud {
 
 impl PointCloud {
     pub fn new(
-        gaussians: &[super::Gaussian],
+        model: &super::Model,
         params: &InitParameters,
         context: &gpu::Context,
         encoder: &mut gpu::CommandEncoder,
     ) -> Self {
-        let gauss_total_size = (gaussians.len() * mem::size_of::<super::GaussianGpu>()) as u64;
+        let count = model.gaussians.len();
+        let gauss_total_size = (count * mem::size_of::<super::GaussianGpu>()) as u64;
         let gauss_buf = context.create_buffer(gpu::BufferDesc {
             name: "gauss-blobs",
             size: gauss_total_size,
@@ -35,13 +36,10 @@ impl PointCloud {
         {
             const SH0: f32 = 0.28209479177387814;
             let gaussians_gpu = unsafe {
-                slice::from_raw_parts_mut(
-                    gauss_scratch.data() as *mut super::GaussianGpu,
-                    gaussians.len(),
-                )
+                slice::from_raw_parts_mut(gauss_scratch.data() as *mut super::GaussianGpu, count)
             };
-            for (gg, g) in gaussians_gpu.iter_mut().zip(gaussians) {
-                let r = SH0 * g.sh[0] + 0.5;
+            for (gg, g) in gaussians_gpu.iter_mut().zip(&model.gaussians) {
+                let r = SH0 * g.shc[0] + 0.5;
                 gg.color = [r.x, r.y, r.z, g.opacity];
             }
         }
@@ -74,7 +72,8 @@ impl PointCloud {
         });
 
         // Build instances
-        let instances = gaussians
+        let instances = model
+            .gaussians
             .iter()
             .map(|g| gpu::AccelerationStructureInstance {
                 acceleration_structure_index: 0,
@@ -98,7 +97,7 @@ impl PointCloud {
             context.create_acceleration_structure_instance_buffer(&instances, &[blas]);
 
         // Build TLAS
-        let tlas_sizes = context.get_top_level_acceleration_structure_sizes(gaussians.len() as u32);
+        let tlas_sizes = context.get_top_level_acceleration_structure_sizes(count as u32);
         let tlas = context.create_acceleration_structure(gpu::AccelerationStructureDesc {
             name: "TLAS",
             ty: gpu::AccelerationStructureType::TopLevel,
@@ -148,7 +147,7 @@ impl PointCloud {
             pass.build_top_level(
                 tlas,
                 &[blas],
-                gaussians.len() as u32,
+                count as u32,
                 instance_buf.at(0),
                 scratch_buf.at(tlas_scratch_offset),
             );

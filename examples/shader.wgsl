@@ -16,7 +16,8 @@ var<uniform> g_params: Parameters;
 var g_acc_struct: acceleration_structure;
 
 struct Gaussian {
-    color: vec4f,
+    color: vec3f,
+    opacity: f32,
 }
 var<storage> g_data: array<Gaussian>;
 
@@ -36,12 +37,14 @@ struct VertexOutput {
 fn draw_vs(@builtin(vertex_index) vi: u32) -> VertexOutput {
     var vo = VertexOutput();
     let tc = vec2f(vec2u(vi) & vec2u(1u, 2u)) * vec2f(1.0, 0.5);
-    let ndc = 2.0 * tc - 1.0;
-    let local_dir = vec3f(ndc * tan(g_camera.fov), 1.0);
-    vo.clip_pos = vec4f(4.0 * tc.x - 1.0, 1.0 - 4.0 * tc.y, 0.0, 1.0);
+    let ndc = 4.0 * tc - 1.0;
+    let local_dir = vec3f(ndc * tan(0.5 * g_camera.fov), 1.0);
+    vo.clip_pos = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
     vo.direction = qrot(g_camera.cam_orientation, local_dir);
     return vo;
 }
+
+const BACKGROUND: vec3f = vec3f(0.0);
 
 @fragment
 fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
@@ -60,18 +63,24 @@ fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
         if (intersection.kind == RAY_QUERY_INTERSECTION_NONE) {
             break;
         }
-        t_start = intersection.t * 1.001;
+        t_start = intersection.t * 1.0001;
 
         let gs = g_data[intersection.instance_id];
-        let world_pos = ray_pos + intersection.t * ray_dir;
-        let local_pos = intersection.world_to_object * vec4f(world_pos, 1.0);
-        let alpha = gs.color.a * exp(-0.5 * dot(local_pos, local_pos));
+        let basis = gs.opacity / g_params.min_opacity;
+
+        let object_ray_pos = intersection.world_to_object * vec4f(ray_pos, 1.0);
+        let object_ray_dir = normalize(intersection.world_to_object * vec4f(ray_dir, 0.0));
+        let effective_t = -dot(object_ray_pos, object_ray_dir);
+
+        let object_pos = object_ray_pos + effective_t * object_ray_dir;
+        let alpha = gs.opacity * pow(basis, -dot(object_pos, object_pos));
         if (alpha > g_params.min_opacity) {
             //TODO: evaluate spherical harmonics here
-            radiance += alpha * transmittance * (gs.color.xyz + 0.5);
+            radiance += alpha * transmittance * gs.color;
             transmittance *= 1.0 - alpha;
         }
     }
 
-    return vec4f(radiance, 0.0);
+    radiance += transmittance * BACKGROUND;
+    return vec4f(radiance, 1.0);
 }
