@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "a79990e4421496f187ce172f559d7d38b287b72e" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "e8598d438611cbed3cd652a88203b1c854d6e870" }
 blade-macros = "0.3"
 bytemuck = "1"
 glam = { version = "0.29", features = ["mint"] }

@@ -40,7 +40,11 @@ impl PointCloud {
             };
             for (gg, g) in gaussians_gpu.iter_mut().zip(&model.gaussians) {
                 let r = SH0 * g.shc[0] + 0.5;
-                gg.color = [r.x, r.y, r.z, g.opacity];
+                gg.color = r.into();
+                gg.opacity = g.opacity;
+                gg.mean = g.mean.into();
+                gg.rotation = g.rotation.into();
+                gg.scale = g.scale.into();
             }
         }
 

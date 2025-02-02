@@ -39,6 +39,13 @@ pub struct Model {
     pub max_sh_degree: usize,
 }
 
+#[repr(C)]
 pub struct GaussianGpu {
-    pub color: [f32; 4],
+    pub color: [f32; 3],
+    pub opacity: f32,
+    pub mean: [f32; 3],
+    pub pad1: f32,
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+    pub pad2: f32,
 }
