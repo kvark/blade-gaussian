@@ -34,17 +34,17 @@ impl PointCloud {
             memory: gpu::Memory::Upload,
         });
         {
-            const SH0: f32 = 0.28209479177387814;
             let gaussians_gpu = unsafe {
                 slice::from_raw_parts_mut(gauss_scratch.data() as *mut super::GaussianGpu, count)
             };
             for (gg, g) in gaussians_gpu.iter_mut().zip(&model.gaussians) {
-                let r = SH0 * g.shc[0] + 0.5;
-                gg.color = r.into();
-                gg.opacity = g.opacity;
                 gg.mean = g.mean.into();
                 gg.rotation = g.rotation.into();
                 gg.scale = g.scale.into();
+                gg.opacity = g.opacity;
+                for (h, shc) in gg.harmonics.iter_mut().zip(g.shc.iter()) {
+                    *h = (*shc, 0)
+                }
             }
         }
 

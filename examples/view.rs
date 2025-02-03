@@ -119,6 +119,7 @@ pub struct CameraParams {
 pub struct Parameters {
     min_opacity: f32,
     min_transmittance: f32,
+    sh_degree: u32,
 }
 
 #[derive(blade_macros::ShaderData)]
@@ -138,7 +139,7 @@ struct Example {
     point_cloud: gauss::PointCloud,
     surface: gpu::Surface,
     context: gpu::Context,
-    min_opacity: f32,
+    params: Parameters,
 }
 
 impl Example {
@@ -235,7 +236,11 @@ impl Example {
             point_cloud,
             surface,
             context,
-            min_opacity,
+            params: Parameters {
+                min_opacity,
+                min_transmittance: 0.01,
+                sh_degree: model.max_sh_degree as u32,
+            },
         }
     }
 
@@ -293,10 +298,7 @@ impl Example {
                         fov: [aspect * self.camera.fov_y, self.camera.fov_y],
                         pad: [0; 2],
                     },
-                    g_params: Parameters {
-                        min_opacity: self.min_opacity,
-                        min_transmittance: 0.01,
-                    },
+                    g_params: self.params,
                     g_acc_struct: self.point_cloud.tlas,
                     g_data: self.point_cloud.gauss_buf.into(),
                 },

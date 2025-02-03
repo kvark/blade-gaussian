@@ -1,3 +1,6 @@
+//Must match `MAX_SH_COMPONENTS`
+const MAX_HARMONICS: u32 = 16;
+
 struct Camera {
     position: vec3<f32>,
     depth: f32,
@@ -11,18 +14,18 @@ var<uniform> g_camera: Camera;
 struct Parameters {
     min_opacity: f32,
     min_transmittance: f32,
+    sh_degree: u32,
 }
 var<uniform> g_params: Parameters;
 var g_acc_struct: acceleration_structure;
 
 struct Gaussian {
-    color: vec3f,
-    opacity: f32,
     mean: vec3f,
     pad1: f32,
     rotation: vec4f,
     scale: vec3f,
-    pad2: f32,
+    opacity: f32,
+    harmonics: array<vec4f, MAX_HARMONICS>,
 }
 var<storage> g_data: array<Gaussian>;
 
@@ -50,6 +53,52 @@ fn draw_vs(@builtin(vertex_index) vi: u32) -> VertexOutput {
     vo.clip_pos = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
     vo.direction = qrot(g_camera.orientation, local_dir);
     return vo;
+}
+
+fn evaluate_spherical_harmonics(gs: Gaussian, dir: vec3f) -> vec3f {
+    const SH = array<f32, MAX_HARMONICS>(
+        0.28209479177387814,
+        -0.4886025119029199,
+        0.4886025119029199,
+        -0.4886025119029199,
+        1.0925484305920792,
+        -1.0925484305920792,
+        0.31539156525252005,
+        -1.0925484305920792,
+        0.5462742152960396,
+        -0.5900435899266435,
+        2.890611442640554,
+        -0.4570457994644658,
+        0.3731763325901154,
+        -0.4570457994644658,
+        1.445305721320277,
+        -0.5900435899266435,
+    );
+
+    let d2 = dir * dir;
+    var color = 0.5 + SH[0] * gs.harmonics[0].xyz;
+    if (g_params.sh_degree >= 1u) {
+        color += SH[1] * gs.harmonics[1].xyz * dir.y;
+        color += SH[2] * gs.harmonics[2].xyz * dir.z;
+        color += SH[3] * gs.harmonics[3].xyz * dir.x;
+    }
+    if (g_params.sh_degree >= 2u) {
+        color += SH[4] * gs.harmonics[4].xyz * dir.x * dir.y;
+        color += SH[5] * gs.harmonics[5].xyz * dir.y * dir.z;
+        color += SH[6] * gs.harmonics[6].xyz * (3.0 * d2.z - 1.0);
+        color += SH[7] * gs.harmonics[7].xyz * dir.x * dir.z;
+        color += SH[8] * gs.harmonics[8].xyz * (d2.x - d2.y);
+    }
+    if (g_params.sh_degree >= 3u) {
+        color += SH[9] * gs.harmonics[9].xyz * dir.y * (3.0 * d2.x - d2.y);
+        color += SH[10] * gs.harmonics[10].xyz * dir.x * dir.y * dir.z;
+        color += SH[11] * gs.harmonics[11].xyz * dir.y * (5.0 * d2.z - 1.0);
+        color += SH[12] * gs.harmonics[12].xyz * dir.z * (5.0 * d2.z - 3.0);
+        color += SH[13] * gs.harmonics[13].xyz * dir.x * (5.0 * d2.z - 1.0);
+        color += SH[14] * gs.harmonics[14].xyz * dir.z * (d2.x - d2.y);
+        color += SH[15] * gs.harmonics[15].xyz * dir.x * (d2.x - 3.0 * d2.y);
+    }
+    return color;
 }
 
 fn check_intersection(intersection: RayIntersection, ray_pos: vec3f, ray_dir: vec3f) -> bool {
@@ -124,7 +173,8 @@ fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
             let alpha = gs.opacity * exp(-0.5 * dot(g_pos, g_pos));
 
             //TODO: evaluate spherical harmonics here
-            radiance += alpha * transmittance * gs.color;
+            let color = evaluate_spherical_harmonics(gs, ray_dir);
+            radiance += alpha * transmittance * color;
             transmittance *= 1.0 - alpha;
             t_start = hit.t;
         }

@@ -22,7 +22,7 @@ pub const fn get_sh_degree(count: usize) -> usize {
     }
 }
 
-pub const MAX_SH_DEGREE: usize = 0;
+pub const MAX_SH_DEGREE: usize = 3;
 pub const MAX_SH_COMPONENTS: usize = get_sh_component_count(MAX_SH_DEGREE);
 
 #[derive(Clone, Default)]
@@ -41,11 +41,10 @@ pub struct Model {
 
 #[repr(C)]
 pub struct GaussianGpu {
-    pub color: [f32; 3],
-    pub opacity: f32,
     pub mean: [f32; 3],
-    pub pad1: f32,
+    pub pad: f32,
     pub rotation: [f32; 4],
     pub scale: [f32; 3],
-    pub pad2: f32,
+    pub opacity: f32,
+    pub harmonics: [(glam::Vec3, u32); MAX_SH_COMPONENTS],
 }
