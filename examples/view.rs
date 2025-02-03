@@ -2,9 +2,36 @@
 
 use blade_gaussian as gauss;
 use blade_graphics as gpu;
-use std::{env, mem};
+use std::{f32, fmt, mem, str};
 
+const D2R: f32 = f32::consts::PI / 180.0;
+const EULER: glam::EulerRot = glam::EulerRot::ZYX;
 const MAX_FLY_SPEED: f32 = 1000000.0;
+
+/// Arguments
+#[derive(argh::FromArgs)]
+struct Arguments {
+    /// input file path
+    #[argh(positional)]
+    input_file: String,
+    /// target resolution
+    #[argh(option)]
+    resolution: Option<String>,
+    /// camera postion and orientation (as Euler)
+    #[argh(option)]
+    cam_pose: Option<String>,
+}
+
+fn parse_vec<const N: usize, T: Copy + Default + str::FromStr>(string: &str) -> [T; N]
+where
+    <T as str::FromStr>::Err: fmt::Debug,
+{
+    let mut vec = [T::default(); N];
+    for (elem, sub) in vec.iter_mut().zip(string.split(',')) {
+        *elem = sub.parse().unwrap();
+    }
+    vec
+}
 
 #[derive(Default)]
 pub struct ControlledCamera {
@@ -130,43 +157,27 @@ impl Example {
         }
     }
 
-    fn init(window: &winit::window::Window) -> Self {
-        log::info!("Loading Gaussian data");
-        let model = match env::args().nth(1) {
-            Some(arg_name) => gauss::io::load(&arg_name),
-            None => {
-                log::info!("Generating test data");
-                gauss::Model {
-                    gaussians: vec![
-                        gauss::Gaussian {
-                            mean: glam::Vec3::new(-7.0, 0.0, 15.0),
-                            scale: glam::Vec3::new(1.0, 1.0, 1.0),
-                            opacity: 1.0,
-                            ..Default::default()
-                        },
-                        gauss::Gaussian {
-                            mean: glam::Vec3::new(-1.0, 0.0, 15.0),
-                            scale: glam::Vec3::new(1.5, 1.5, 1.5),
-                            opacity: 0.5,
-                            ..Default::default()
-                        },
-                        gauss::Gaussian {
-                            mean: glam::Vec3::new(7.0, 0.0, 15.0),
-                            scale: glam::Vec3::new(2.0, 2.0, 2.0),
-                            opacity: 0.25,
-                            ..Default::default()
-                        },
-                    ],
-                    max_sh_degree: 0,
-                }
-            }
+    fn init(window: &winit::window::Window, args: Arguments) -> Self {
+        let mut camera = ControlledCamera {
+            depth: 10000.0,
+            fov_y: 1.0,
+            fly_speed: 1.0,
+            ..Default::default()
         };
+        if let Some(ref arg) = args.cam_pose {
+            let v = parse_vec::<6, f32>(arg);
+            camera.position = glam::Vec3::new(v[0], v[1], v[2]);
+            camera.orientation = glam::Quat::from_euler(EULER, v[3] * D2R, v[4] * D2R, v[5] * D2R);
+        }
+
+        log::info!("Loading Gaussian data");
+        let model = gauss::io::load(&args.input_file);
 
         let context = unsafe {
             gpu::Context::init(gpu::ContextDesc {
                 presentation: true,
                 validation: cfg!(debug_assertions),
-                timing: false,
+                timing: true,
                 capture: false,
                 overlay: true,
                 device_id: 0,
@@ -216,12 +227,7 @@ impl Example {
         let point_cloud = gauss::PointCloud::new(&model, &params, &context, &mut command_encoder);
 
         Self {
-            camera: ControlledCamera {
-                depth: 10000.0,
-                fov_y: 1.0,
-                fly_speed: 1.0,
-                ..Default::default()
-            },
+            camera,
             draw_pipeline,
             command_encoder,
             prev_sync_point: None,
@@ -303,16 +309,37 @@ impl Example {
         self.wait_for_gpu();
         self.prev_sync_point = Some(sync_point);
     }
+
+    fn print_info(&self) {
+        println!("Camera:");
+        let (roll, pitch, yaw) = self.camera.orientation.to_euler(EULER);
+        println!("\tposition: {:?}", self.camera.position);
+        println!(
+            "\torientation: ({},{},{})",
+            roll / D2R,
+            pitch / D2R,
+            yaw / D2R
+        );
+        println!("Timings:");
+        for &(ref name, value) in self.command_encoder.timings() {
+            println!("\t{}: {} ms", name, value.as_millis());
+        }
+    }
 }
 fn main() {
+    let args = argh::from_env::<Arguments>();
     env_logger::init();
 
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
-    let window_attributes =
-        winit::window::Window::default_attributes().with_title("blade-gaussian-viewer");
+    let mut window_attributes = winit::window::Window::default_attributes();
+    window_attributes.title = "blade-gaussian-viewer".to_string();
+    if let Some(ref arg) = args.resolution {
+        let res = parse_vec::<2, u32>(arg);
+        window_attributes.inner_size = Some(winit::dpi::Size::Physical(res.into()));
+    }
     let window = event_loop.create_window(window_attributes).unwrap();
 
-    let mut example = Example::init(&window);
+    let mut example = Example::init(&window, args);
     let mut last_mouse_pos = [0i32; 2];
     let mut in_drag = false;
     let drag_speed = 0.01f32;
@@ -339,6 +366,9 @@ fn main() {
                     } => {
                         if key_code == winit::keyboard::KeyCode::Escape {
                             target.exit();
+                        }
+                        if key_code == winit::keyboard::KeyCode::KeyI {
+                            example.print_info();
                         }
                         example.camera.on_key(key_code, 1.0);
                     }
