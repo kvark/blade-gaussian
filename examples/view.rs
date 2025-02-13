@@ -111,7 +111,7 @@ pub struct CameraParams {
     depth: f32,
     cam_orientation: [f32; 4],
     fov: [f32; 2],
-    pad: [u32; 2],
+    resolution: [u32; 2],
 }
 
 #[repr(C)]
@@ -123,16 +123,53 @@ pub struct Parameters {
 }
 
 #[derive(blade_macros::ShaderData)]
-struct DrawData {
+struct InlineDrawData {
     g_camera: CameraParams,
     g_params: Parameters,
     g_acc_struct: gpu::AccelerationStructure,
     g_data: gpu::BufferPiece,
 }
 
+#[derive(blade_macros::ShaderData)]
+struct CollectData {
+    g_camera: CameraParams,
+    g_acc_struct: gpu::AccelerationStructure,
+    g_data: gpu::BufferPiece,
+    g_list: gpu::BufferPiece,
+}
+
+#[derive(blade_macros::ShaderData)]
+struct SortData {
+    g_camera: CameraParams,
+    g_data: gpu::BufferPiece,
+    g_list: gpu::BufferPiece,
+}
+
+#[derive(blade_macros::ShaderData)]
+struct DeferredDrawData {
+    g_camera: CameraParams,
+    g_params: Parameters,
+    g_data: gpu::BufferPiece,
+    g_bins_ro: gpu::BufferPiece,
+    g_list_ro: gpu::BufferPiece,
+}
+
+enum Method {
+    Inline {
+        draw_pipeline: gpu::RenderPipeline,
+    },
+    Deferred {
+        list_buf: gpu::Buffer,
+        bin_offsets_buf: gpu::Buffer,
+        collect_pipeline: gpu::ComputePipeline,
+        sort_pipeline: gpu::ComputePipeline,
+        draw_pipeline: gpu::RenderPipeline,
+    },
+}
+
 struct Example {
     camera: ControlledCamera,
-    draw_pipeline: gpu::RenderPipeline,
+    method: Method,
     command_encoder: gpu::CommandEncoder,
     prev_sync_point: Option<gpu::SyncPoint>,
     window_size: winit::dpi::PhysicalSize<u32>,
@@ -202,21 +239,69 @@ impl Example {
             mem::size_of::<gauss::GaussianGpu>() as u32
         );
 
-        let draw_layout = <DrawData as gpu::ShaderData>::layout();
-        let draw_pipeline = context.create_render_pipeline(gpu::RenderPipelineDesc {
-            name: "main",
-            data_layouts: &[&draw_layout],
-            primitive: gpu::PrimitiveState {
-                topology: gpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            vertex: shader.at("draw_vs"),
-            vertex_fetches: &[],
-            fragment: Some(shader.at("draw_fs")),
-            color_targets: &[info.format.into()],
-            depth_stencil: None,
-            multisample_state: Default::default(),
-        });
+        let method = {
+            if true {
+                let list_buf = context.create_buffer(gpu::BufferDesc {
+                    name: "list",
+                    size: 10000000,
+                    memory: gpu::Memory::Device,
+                });
+                let bin_offsets_buf = context.create_buffer(gpu::BufferDesc {
+                    name: "list",
+                    size: (window_size.width as u64 * window_size.height as u64 + 1) * 4,
+                    memory: gpu::Memory::Device,
+                });
+                let collect_layout = <CollectData as gpu::ShaderData>::layout();
+                let sort_layout = <SortData as gpu::ShaderData>::layout();
+                let draw_layout = <DeferredDrawData as gpu::ShaderData>::layout();
+                Method::Deferred {
+                    list_buf,
+                    bin_offsets_buf,
+                    collect_pipeline: context.create_compute_pipeline(gpu::ComputePipelineDesc {
+                        name: "collect",
+                        data_layouts: &[&collect_layout],
+                        compute: shader.at("collect_cs"),
+                    }),
+                    sort_pipeline: context.create_compute_pipeline(gpu::ComputePipelineDesc {
+                        name: "sort",
+                        data_layouts: &[&sort_layout],
+                        compute: shader.at("sort_cs"),
+                    }),
+                    draw_pipeline: context.create_render_pipeline(gpu::RenderPipelineDesc {
+                        name: "draw",
+                        data_layouts: &[&draw_layout],
+                        primitive: gpu::PrimitiveState {
+                            topology: gpu::PrimitiveTopology::TriangleStrip,
+                            ..Default::default()
+                        },
+                        vertex: shader.at("draw_vs"),
+                        vertex_fetches: &[],
+                        fragment: Some(shader.at("draw_deferred_fs")),
+                        color_targets: &[info.format.into()],
+                        depth_stencil: None,
+                        multisample_state: Default::default(),
+                    }),
+                }
+            } else {
+                let draw_layout = <InlineDrawData as gpu::ShaderData>::layout();
+                Method::Inline {
+                    draw_pipeline: context.create_render_pipeline(gpu::RenderPipelineDesc {
+                        name: "main",
+                        data_layouts: &[&draw_layout],
+                        primitive: gpu::PrimitiveState {
+                            topology: gpu::PrimitiveTopology::TriangleStrip,
+                            ..Default::default()
+                        },
+                        vertex: shader.at("draw_vs"),
+                        vertex_fetches: &[],
+                        fragment: Some(shader.at("draw_fs")),
+                        color_targets: &[info.format.into()],
+                        depth_stencil: None,
+                        multisample_state: Default::default(),
+                    }),
+                }
+            }
+        };
 
         let mut command_encoder = context.create_command_encoder(gpu::CommandEncoderDesc {
             name: "main",
@@ -229,7 +314,7 @@ impl Example {
 
         Self {
             camera,
-            draw_pipeline,
+            method,
             command_encoder,
             prev_sync_point: None,
             window_size,
@@ -246,8 +331,26 @@ impl Example {
 
     fn deinit(&mut self) {
         self.wait_for_gpu();
-        self.context
-            .destroy_render_pipeline(&mut self.draw_pipeline);
+        match self.method {
+            Method::Inline {
+                ref mut draw_pipeline,
+            } => {
+                self.context.destroy_render_pipeline(draw_pipeline);
+            }
+            Method::Deferred {
+                list_buf,
+                bin_offsets_buf,
+                ref mut collect_pipeline,
+                ref mut sort_pipeline,
+                ref mut draw_pipeline,
+            } => {
+                self.context.destroy_buffer(list_buf);
+                self.context.destroy_buffer(bin_offsets_buf);
+                self.context.destroy_compute_pipeline(collect_pipeline);
+                self.context.destroy_compute_pipeline(sort_pipeline);
+                self.context.destroy_render_pipeline(draw_pipeline);
+            }
+        }
         self.context
             .destroy_command_encoder(&mut self.command_encoder);
         self.context.destroy_surface(&mut self.surface);
@@ -258,6 +361,19 @@ impl Example {
         self.window_size = size;
         let config = Self::make_surface_config(size);
         self.context.reconfigure_surface(&mut self.surface, config);
+
+        if let Method::Deferred {
+            ref mut bin_offsets_buf,
+            ..
+        } = self.method
+        {
+            self.context.destroy_buffer(*bin_offsets_buf);
+            *bin_offsets_buf = self.context.create_buffer(gpu::BufferDesc {
+                name: "list",
+                size: (size.width as u64 * size.height as u64 + 1) * 4,
+                memory: gpu::Memory::Device,
+            });
+        }
     }
 
     fn wait_for_gpu(&mut self) {
@@ -272,9 +388,64 @@ impl Example {
         }
         let frame = self.surface.acquire_frame();
         let aspect = self.window_size.width as f32 / self.window_size.height as f32;
+        let g_camera = CameraParams {
+            cam_position: self.camera.position.into(),
+            depth: self.camera.depth,
+            cam_orientation: self.camera.orientation.into(),
+            fov: [aspect * self.camera.fov_y, self.camera.fov_y],
+            resolution: [self.window_size.width, self.window_size.height],
+        };
 
         self.command_encoder.start();
         self.command_encoder.init_texture(frame.texture());
+
+        match self.method {
+            Method::Inline { .. } => {}
+            Method::Deferred {
+                ref list_buf,
+                ref bin_offsets_buf,
+                ref collect_pipeline,
+                ref sort_pipeline,
+                draw_pipeline: _,
+            } => {
+                if let mut pass = self.command_encoder.transfer("prepare") {
+                    pass.fill_buffer(list_buf.at(0), mem::size_of::<u32>() as u64, 0);
+                    let bin_buffer_size =
+                        (self.window_size.width as u64 * self.window_size.height as u64 + 1) * 4;
+                    pass.fill_buffer(bin_offsets_buf.at(0), bin_buffer_size, 0xFF);
+                }
+                if let mut pass = self.command_encoder.compute("collect") {
+                    let groups = collect_pipeline.get_dispatch_for(gpu::Extent {
+                        width: self.window_size.width,
+                        height: self.window_size.height,
+                        depth: 1,
+                    });
+                    let mut pen = pass.with(collect_pipeline);
+                    pen.bind(
+                        0,
+                        &CollectData {
+                            g_camera,
+                            g_acc_struct: self.point_cloud.tlas,
+                            g_data: self.point_cloud.gauss_buf.into(),
+                            g_list: list_buf.at(0),
+                        },
+                    );
+                    pen.dispatch(groups);
+                }
+                if let mut pass = self.command_encoder.compute("sort") {
+                    let mut pen = pass.with(collect_pipeline);
+                    pen.bind(
+                        0,
+                        &SortData {
+                            g_camera,
+                            g_data: self.point_cloud.gauss_buf.into(),
+                            g_list: list_buf.at(0),
+                        },
+                    );
+                    pen.dispatch([1, 1, 1]); //TODO
+                }
+            }
+        }
 
         if let mut pass = self.command_encoder.render(
             "main",
@@ -287,23 +458,41 @@ impl Example {
                 depth_stencil: None,
             },
         ) {
-            let mut pen = pass.with(&self.draw_pipeline);
-            pen.bind(
-                0,
-                &DrawData {
-                    g_camera: CameraParams {
-                        cam_position: self.camera.position.into(),
-                        depth: self.camera.depth,
-                        cam_orientation: self.camera.orientation.into(),
-                        fov: [aspect * self.camera.fov_y, self.camera.fov_y],
-                        pad: [0; 2],
-                    },
-                    g_params: self.params,
-                    g_acc_struct: self.point_cloud.tlas,
-                    g_data: self.point_cloud.gauss_buf.into(),
-                },
-            );
-            pen.draw(0, 3, 0, 1);
+            match self.method {
+                Method::Inline { ref draw_pipeline } => {
+                    let mut pen = pass.with(draw_pipeline);
+                    pen.bind(
+                        0,
+                        &InlineDrawData {
+                            g_camera,
+                            g_params: self.params,
+                            g_acc_struct: self.point_cloud.tlas,
+                            g_data: self.point_cloud.gauss_buf.into(),
+                        },
+                    );
+                    pen.draw(0, 3, 0, 1);
+                }
+                Method::Deferred {
+                    ref list_buf,
+                    ref bin_offsets_buf,
+                    collect_pipeline: _,
+                    sort_pipeline: _,
+                    ref draw_pipeline,
+                } => {
+                    let mut pen = pass.with(draw_pipeline);
+                    pen.bind(
+                        0,
+                        &DeferredDrawData {
+                            g_camera,
+                            g_params: self.params,
+                            g_data: self.point_cloud.gauss_buf.into(),
+                            g_bins_ro: bin_offsets_buf.at(0),
+                            g_list_ro: list_buf.at(0),
+                        },
+                    );
+                    pen.draw(0, 3, 0, 1);
+                }
+            }
         }
         self.command_encoder.present(frame);
         let sync_point = self.context.submit(&mut self.command_encoder);

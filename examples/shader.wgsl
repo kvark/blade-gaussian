@@ -6,7 +6,7 @@ struct Camera {
     depth: f32,
     orientation: vec4<f32>,
     fov: vec2<f32>,
-    pad: vec2<u32>,
+    resolution: vec2<u32>,
 }
 
 var<uniform> g_camera: Camera;
@@ -28,6 +28,21 @@ struct Gaussian {
     harmonics: array<vec4f, MAX_HARMONICS>,
 }
 var<storage> g_data: array<Gaussian>;
+
+struct Entry {
+    bin: u32,
+    gid: u32,
+}
+
+struct List {
+    count: atomic<u32>,
+    entries: array<Entry>,
+}
+var<storage, read_write> g_list: List;
+var<storage, read> g_list_ro: List;
+
+var<storage, read_write> g_bins: array<atomic<u32>>;
+var<storage, read> g_bins_ro: array<u32>;
 
 fn qmake(axis: vec3<f32>, angle: f32) -> vec4<f32> {
     return vec4<f32>(axis * sin(angle), cos(angle));
@@ -110,13 +125,109 @@ fn check_intersection(intersection: RayIntersection, ray_pos: vec3f, ray_dir: ve
     return dot(object_pos, object_pos) <= 1.0;
 }
 
+@compute @workgroup_size(8, 8, 1)
+fn collect_cs(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) wg_count: vec3<u32>,
+) {
+    if (any(global_id.xy >= g_camera.resolution)) {
+        return;
+    }
+
+    const WG_SIZE: vec2u = vec2u(8, 8);
+    let tile_size = (g_camera.resolution + WG_SIZE - 1u) / (WG_SIZE * wg_count.xy);
+    let ndc = (vec2f(global_id.xy) + 0.5) * vec2f(tile_size) / vec2f(g_camera.resolution);
+    let local_dir = vec3f(ndc * tan(0.5 * g_camera.fov), 1.0);
+    let ray_dir = normalize(qrot(g_camera.orientation, local_dir));
+    let ray_pos = g_camera.position;
+
+    let bin = (global_id.y << 16u) | global_id.x;
+
+    const CHUNK_SIZE: u32 = 8u;
+    var chunk_base = 0u;
+    var chunk_pos = CHUNK_SIZE;
+    const MAX_HITS: u32 = 64u;
+    var hit_count = 0u;
+
+    var rq: ray_query;
+    let ray_flags = RAY_FLAG_CULL_BACK_FACING | RAY_FLAG_FORCE_NO_OPAQUE;
+    let desc = RayDesc(ray_flags, 0xFFu, 0.0, g_camera.depth, ray_pos, ray_dir);
+    rayQueryInitialize(&rq, g_acc_struct, desc);
+    var in_progress = true;
+    while (in_progress && hit_count < MAX_HITS) {
+        in_progress = rayQueryProceed(&rq);
+        let intersection = rayQueryGetCandidateIntersection(&rq);
+        if (intersection.kind == RAY_QUERY_INTERSECTION_NONE) {
+            continue;
+        }
+        if (!check_intersection(intersection, ray_pos, ray_dir)) {
+            continue;
+        }
+        if (chunk_pos == CHUNK_SIZE) {
+            // allocate a new chunk
+            chunk_base = atomicAdd(&g_list.count, CHUNK_SIZE);
+            if (chunk_base >= arrayLength(&g_list.entries)) {
+                return;
+            }
+            chunk_pos = 0u;
+        }
+        g_list.entries[chunk_base + chunk_pos] = Entry(bin, intersection.instance_id);
+        chunk_pos += 1u;
+    }
+
+    // fill out the rest of the chunk with invalid values
+    while (chunk_pos < CHUNK_SIZE) {
+        g_list.entries[chunk_base + chunk_pos] = Entry(~0u,~0u);
+        chunk_pos += 1u;
+    }
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn sort_cs(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) wg_count: vec3<u32>,
+) {
+    //TODO
+}
+
+const BACKGROUND: vec3f = vec3f(0.0);
+
+fn compute_response(gs: Gaussian, pos: vec3f, dir: vec3f) -> f32 {
+    let g_origin = qrot(qinv(gs.rotation), pos - gs.mean) / gs.scale;
+    let g_dir = qrot(qinv(gs.rotation), dir) / gs.scale;
+    let effective_t = -dot(g_origin, g_dir) / dot(g_dir, g_dir);
+    let g_pos = g_origin + effective_t * g_dir;
+    return gs.opacity * exp(-0.5 * dot(g_pos, g_pos));
+}
+
+@fragment
+fn draw_deferred_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
+    let ray_dir = normalize(vo.direction);
+    var transmittance = 1.0;
+    var radiance = vec3f(0.0);
+
+    let bin = (u32(vo.clip_pos.y) << 16u) | u32(vo.clip_pos.x);
+    let start = g_bins_ro[bin];
+    let end = g_bins_ro[bin + 1];
+    for (var i=start; i<end; i+=1u) {
+        let entry = g_list_ro.entries[i];
+        let gs = g_data[entry.gid];
+        let alpha = compute_response(gs, g_camera.position, ray_dir);
+        let color = evaluate_spherical_harmonics(gs, ray_dir);
+        radiance += alpha * transmittance * color;
+        transmittance *= 1.0 - alpha;
+    }
+
+    radiance += transmittance * BACKGROUND;
+    return vec4f(radiance, 1.0);
+}
+
 struct Hit {
     t: f32,
     i: u32,
 }
 
 const hit_window: u32 = 5;
-const BACKGROUND: vec3f = vec3f(0.0);
 
 @fragment
 fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
@@ -165,14 +276,7 @@ fn draw_fs(vo: VertexOutput) -> @location(0) vec4<f32> {
         for (var i = 0u; i < hit_count; i += 1u) {
             let hit = hits[i];
             let gs = g_data[hit.i];
-
-            let g_origin = qrot(qinv(gs.rotation), ray_pos - gs.mean) / gs.scale;
-            let g_dir = qrot(qinv(gs.rotation), ray_dir) / gs.scale;
-            let effective_t = -dot(g_origin, g_dir) / dot(g_dir, g_dir);
-            let g_pos = g_origin + effective_t * g_dir;
-            let alpha = gs.opacity * exp(-0.5 * dot(g_pos, g_pos));
-
-            //TODO: evaluate spherical harmonics here
+            let alpha = compute_response(gs, ray_pos, ray_dir);
             let color = evaluate_spherical_harmonics(gs, ray_dir);
             radiance += alpha * transmittance * color;
             transmittance *= 1.0 - alpha;
